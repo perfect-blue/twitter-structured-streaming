@@ -1,5 +1,8 @@
-import org.apache.spark.sql.types.{DataTypes, StructType}
+import org.apache.spark.sql.types.{DataTypes, LongType, StructType, TimestampType}
+import java.sql.Timestamp
 
+import org.apache.avro.SchemaBuilder
+import org.apache.spark.sql.catalyst.expressions.UnixTimestamp
 object TwitterSchema {
 
   //place filed
@@ -123,7 +126,7 @@ object TwitterSchema {
 
 
   val statusStruct:StructType = new StructType()
-    .add(CREATED_AT_FIELD,DataTypes.TimestampType)
+    .add(CREATED_AT_FIELD,LongType)
     .add(ID_FIELD, DataTypes.StringType)
     .add(TEXT_FIELD, DataTypes.StringType)
     .add(SOURCE_FIELD, DataTypes.StringType)
@@ -148,5 +151,8 @@ object TwitterSchema {
 
   val payloadStruct:StructType= new StructType()
     .add("payload",statusStruct)
+
+  payloadStruct.printTreeString()
+
 
 }
