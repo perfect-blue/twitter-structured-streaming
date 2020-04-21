@@ -11,6 +11,16 @@ class TwitterTask(sparkSession: SparkSession,bootstrapServers:String,topic:Strin
   import sparkSession.implicits._
 
 
+  private val watermarkSize="5 minutes"
+  private val windowSize="5 minutes"
+  private val slidingSize="1 minutes"
+  private val getTweetLength=sparkSession.udf.register("getTweetLength",getLength)
+
+  def getLength:String=> Int =(column:String)=>{
+    val textSplit=column.split(" ")
+    textSplit.length
+  }
+
   private val df=sparkSession
     .readStream
     .format("kafka")
@@ -22,85 +32,119 @@ class TwitterTask(sparkSession: SparkSession,bootstrapServers:String,topic:Strin
 
   //ubah data frame menjadi string
   private val stringDF=df.selectExpr("CAST(Value AS STRING)")
-  df.printSchema()
   private val tweetDF=stringDF.select(from_json($"Value",payloadStruct) as("tweet"))
 
+  private val statusDF=tweetDF.selectExpr("tweet.payload.Id",
+    "tweet.payload.CreatedAt","tweet.payload.Text","tweet.payload.Source",
+    "tweet.payload.FavoriteCount",
+    "tweet.payload.Retweet",
+    "tweet.payload.RetweetCount",
+    "tweet.payload.User.Id AS UserId",
+    "tweet.payload.User.FollowersCount",
+    "tweet.payload.User.FriendsCount",
+    "tweet.payload.User.StatusesCount",
+    "tweet.payload.User.verified",
+    "tweet.payload.UserMentionEntities",
+    "tweet.payload.Lang")
+    .withColumn("tweetLength",getTweetLength(col("Text")))
+    .withColumn("time", to_timestamp(from_unixtime(col("CreatedAt").divide(1000))))
+    .where("tweet.payload.Text IS NOT NULL AND tweet.payload.CreatedAt IS NOT NULL")
+
+
+
   def subscribe(): Unit ={
-    //data frame
-    val averageWord=getAverageWord()
-//    val tweetLocation=countTweetLocation()
-//    val busyHour=getBusyHour()
-//    val status=getStatus()
+//    //data frame
+    val averageTweet=getCountAverageTweetByRetweet(0)
+    val viralTweet=getCountAverageTweetByRetweet(100)
+    val favoriteTweet=getCountAverageTweetByFavorite(50)
+    val influencedTweet=getTweetByFollowerCount(300)
+    val langTweet=getCountLanguage()
+    val retweetTweet=getRetweetOrNot()
 
-    //query console
-    val query_average_word=writeQueryConsole(averageWord,"complete")
-//    val query_status=writeQueryConsole(status,"append")
-//    val query_tweet_location=writeQueryConsole(tweetLocation,"complete")
-//    val query_busy_hour=writeQueryConsole(busyHour,"complete")
+    //file
+    val query_averageTweet_csv=writeQueryCSV(averageTweet,"average")
+    val query_viralTweet_csv=writeQueryCSV(viralTweet,"viral")
+    val query_favoriteTweet_csv=writeQueryCSV(favoriteTweet,"favorite")
+    val query_influencedTweet_csv=writeQueryCSV(influencedTweet,"influenced")
+    val query_langTweet_csv=writeQueryCSV(retweetTweet,"retweet")
 
-    //query file
-//    val query_average_word_csv=writeQueryCSV(averageWord,"averageWord")
-//    val query_status_csv=writeQueryCSV(status,"status")
-//    val query_tweet_location_csv=writeQueryCSV(tweetLocation,"location")
-//    val query_busy_hour_csv=writeQueryCSV(busyHour,"busyHour")
 
-    //kafka
-    writeQueryKafka(averageWord,"complete","twitter-average",this.bootstrapServers,"averageWord")
-//    query file termination
-//    query_average_word_csv.awaitTermination()
-//    query_status.awaitTermination()
-//    query_tweet_location_csv.awaitTermination()
-//    query_busy_hour_csv.awaitTermination()
-
-    //query console termination
-    query_average_word.awaitTermination()
-//    query_status_csv.awaitTermination()
-//    query_tweet_location.awaitTermination()
-//    query_busy_hour.awaitTermination()
-
-    //kafka termination
-
+    //await termination
+    query_averageTweet_csv.awaitTermination()
+    query_viralTweet_csv.awaitTermination()
+    query_favoriteTweet_csv.awaitTermination()
+    query_influencedTweet_csv.awaitTermination()
+    query_langTweet_csv.awaitTermination()
   }
-
-  def getStatus():Dataset[Row]={
-    val statusDF=tweetDF.selectExpr("tweet.payload.Id",
-      "tweet.payload.CreatedAt","tweet.payload.Text","tweet.payload.Source",
-    "tweet.payload.FavoriteCount","tweet.payload.RetweetCount")
-      .withColumn("time", from_unixtime(col("CreatedAt").divide(1000)))
-      .where("tweet.payload.CreatedAt IS NOT NULL")
-
-    statusDF
-  }
-
-  def getUser(dataFrame: DataFrame):StreamingQuery={
-    val userDF=dataFrame.selectExpr("tweet.payload.User.*")
-    val query=writeQueryConsole(userDF,"append")
-    query
-  }
-
 
   //ANALYTICS
-  //TODO: add another analytics based on ABD project
-  //average word
-  def getAverageWord():Dataset[Row]={
-    val statusDF=tweetDF
-      .selectExpr("tweet.payload.Id","tweet.payload.CreatedAt","tweet.payload.Text")
-      .withColumn("tweetLength",getTweetLength(col("Text")))
-      .withColumn("time", to_timestamp(from_unixtime(col("CreatedAt").divide(1000))))
-      .where("tweet.payload.Text IS NOT NULL AND tweet.payload.CreatedAt IS NOT NULL")
+  /*
+   * berapa banyak dan rata-rata panjang tweet pada selang waktu tertentu
+   */
+  def getCountAverageTweetByRetweet(retweet:Int):Dataset[Row]={
 
-
+    //average word and count
     val windowedAverageTweet=statusDF
-      .withWatermark("time","10 minutes")
-      .groupBy(
-      window($"time","10 minutes","5 minutes")
-    ).avg("tweetLength")
+      .where("RetweetCount>="+retweet)
+      .withWatermark("time",watermarkSize)
+      .groupBy(window($"time",windowSize,slidingSize))
+      .agg(
+        expr("avg(tweetLength) AS averageWord"),
+        expr("count(Id) AS countTweet")
+      )
 
-    val windowedLength=windowedAverageTweet.select(col("window"),col("avg(tweetLength)").as("averageWord"))
-    val result=windowedLength.selectExpr("window.start","window.end","averageWord")
-    result
+    windowedAverageTweet.select("window.start","window.end","averageWord","countTweet")
   }
 
+  def getCountAverageTweetByFavorite(favorite:Int):Dataset[Row]={
+    //average word and count
+    val windowedAverageTweet=statusDF
+      .where("RetweetCount>="+favorite)
+      .withWatermark("time",watermarkSize)
+      .groupBy(window($"time",windowSize,slidingSize))
+      .agg(
+        expr("avg(tweetLength) AS averageWord"),
+        expr("count(Id) AS countTweet")
+      )
+
+    windowedAverageTweet.select("window.start","window.end","averageWord","countTweet")
+  }
+
+  /*
+   * jumlah tweet dengan follower tertentu
+   */
+  def getTweetByFollowerCount(follower:Int):Dataset[Row]={
+      val windowedUser=statusDF
+          .where("verified=true OR FollowersCount>="+follower)
+          .withWatermark("time",watermarkSize)
+          .groupBy(window($"time",windowSize,slidingSize))
+          .agg(
+            expr("count(Id) AS InfluencedTweet")
+          )
+    windowedUser.selectExpr("window.start","window.end","influencedTweet")
+  }
+
+  def getViralTweet(retweet:Int):Dataset[Row]={
+    val lengthDF=statusDF
+    val windowedAverageTweet=lengthDF
+      .withWatermark("time",watermarkSize)
+      .groupBy(window($"time",windowSize,slidingSize))
+      .agg(
+        expr("avg(tweetLength) AS averageWord"),
+        expr("count(Id) AS countTweet")
+      )
+
+    windowedAverageTweet.select("window.start","window.end","averageWord","countTweet")
+  }
+
+  def getRetweetOrNot():Dataset[Row]={
+    val windowedRetweet=statusDF
+      .withWatermark("time",watermarkSize)
+      .groupBy(window($"time",windowSize,slidingSize),$"Retweet")
+      .count()
+
+    windowedRetweet.selectExpr("window.start","window.end","Retweet","count")
+  }
   //location count
   def countTweetLocation():Dataset[Row]={
     val statusDF=tweetDF.selectExpr("tweet.payload.Id","tweet.payload.CreatedAt","tweet.payload.User.Location")
@@ -117,29 +161,21 @@ class TwitterTask(sparkSession: SparkSession,bootstrapServers:String,topic:Strin
     val result=countCountry.selectExpr("window.start","window.end","Location","Count")
 
     result
-//    val query=writeQueryConsole(countCountry,"complete")
-//    query
-  }
-
-  //most busy hour
-  def getBusyHour():Dataset[Row]={
-    val statusDF=tweetDF
-      .selectExpr("tweet.payload.Id","tweet.payload.CreatedAt")
-      .withColumn("time", to_timestamp(from_unixtime(col("CreatedAt").divide(1000))))
-      .where("tweet.payload.CreatedAt IS NOT NULL")
-
-    val busyHour=statusDF
-      .withWatermark("time","10 minutes")
-      .groupBy(
-      window($"time","10 minutes","5 minutes")
-    ).count()
-
-    val result=busyHour.selectExpr("window.start","window.end","count")
-    result
-//    val query=writeQueryConsole(busyHour,"complete")
-//    query
 
   }
+
+  /*
+   *Menghitung bahasa pada selang waktu tertentu
+   */
+  def getCountLanguage():Dataset[Row]={
+    val windowedLanguage=statusDF
+        .withWatermark("time",watermarkSize)
+        .groupBy(window($"time",windowSize,slidingSize),$"Lang")
+        .count()
+
+    windowedLanguage.select("window.start","window.end","Lang","count")
+  }
+
   //most used hashtag
   def countHashtags(text:String)={
     val words=Seq(text).flatMap(_.split(" "))
@@ -148,13 +184,6 @@ class TwitterTask(sparkSession: SparkSession,bootstrapServers:String,topic:Strin
   }
 
   //UDF
-  val getTweetLength=sparkSession.udf.register("getTweetLength",getLength)
-  //get words
-  def getLength:String=> Int =(column:String)=>{
-    val textSplit=column.split(" ")
-    textSplit.length
-  }
-
   //convert epoch time
   val convertEpoch=sparkSession.udf.register("convertEpoch",convEpoch)
   def convEpoch:String=>Long=(column:String)=>{
@@ -162,4 +191,6 @@ class TwitterTask(sparkSession: SparkSession,bootstrapServers:String,topic:Strin
     val result=time/1000
     result.toLong
   }
+
+
 }
