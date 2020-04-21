@@ -41,7 +41,7 @@ object TwitterSchema {
   val RETWEETED_BY_ME_FIELD="RetweetedByMe"
   val CURRENT_USER_RETWEET_ID="CurrentUserRetweetId"
   val POSSIBLY_SENSITIVE_FIELD="PossiblySensitive"
-  val LANG_FIELD="lang"
+  val LANG_FIELD="Lang"
   val WITHELD_COUNTRY_FIELD="WithheldInCountries"
 
   //user field
@@ -123,7 +123,13 @@ object TwitterSchema {
     .add(STATUS_COUNT_FIELD, DataTypes.IntegerType)
     .add(IS_GEO_ENABLED, DataTypes.BooleanType)
     .add(IS_VERIFIED, DataTypes.BooleanType)
+    .add("Lang",DataTypes.StringType)
 
+  val userMetionEntities=new StructType()
+    .add(NAME_FIELD,DataTypes.StringType)
+    .add(ID_FIELD,DataTypes.StringType)
+    .add(TEXT_FIELD,DataTypes.StringType)
+    .add(SCREEN_NAME_FIELD,DataTypes.StringType)
 
   val statusStruct:StructType = new StructType()
     .add(CREATED_AT_FIELD,LongType)
@@ -142,6 +148,7 @@ object TwitterSchema {
     .add(USER_FIELD, userStruct)
     .add(RETWEET_FIELD,DataTypes.BooleanType)
     .add(CONTRIBUTORS_FIELD, DataTypes.createArrayType(DataTypes.IntegerType))
+    .add(USER_MENTION_FIELD,DataTypes.createArrayType(userMetionEntities))
     .add(RETWEET_COUNT_FIELD, DataTypes.IntegerType)
     .add(RETWEETED_BY_ME_FIELD, DataTypes.BooleanType)
     .add(CURRENT_USER_RETWEET_ID, DataTypes.IntegerType)
@@ -151,8 +158,6 @@ object TwitterSchema {
 
   val payloadStruct:StructType= new StructType()
     .add("payload",statusStruct)
-
-  payloadStruct.printTreeString()
 
 
 }
